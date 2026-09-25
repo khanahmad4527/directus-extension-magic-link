@@ -8,6 +8,8 @@ const DIRECTUS = process.env['DIRECTUS_URL'] ?? 'http://localhost:8155';
 const MAILPIT = process.env['MAILPIT_URL'] ?? 'http://localhost:8125';
 const TEMPLATES = path.resolve(import.meta.dirname, 'fixtures/templates');
 const RUN = randomUUID().slice(0, 8);
+const PAGES_ENABLED = process.env['MAGIC_LINK_ENABLE_PAGES'] !== 'false';
+const SUITE = `Directus ${process.env['DIRECTUS_VERSION'] ?? ''} ${process.env['DB_CLIENT'] ?? ''}`.trim();
 
 type Json = Record<string, any>;
 
@@ -179,7 +181,7 @@ beforeAll(async () => {
 	await admin('/access', 'POST', { role: roleId, policy: policy.id });
 });
 
-describe(`Directus ${process.env['DIRECTUS_VERSION'] ?? ''} ${process.env['DB_CLIENT'] ?? ''}`.trim(), () => {
+describe.runIf(PAGES_ENABLED)(SUITE, () => {
 	it('reports the Directus version under test', () => {
 		expect(directusVersion).toMatch(/^1[12]\./);
 	});
@@ -788,5 +790,43 @@ describe(`Directus ${process.env['DIRECTUS_VERSION'] ?? ''} ${process.env['DB_CL
 				expect(page.text).toContain('This link can&#39;t be used');
 			}
 		});
+	});
+});
+
+// The default: no built-in pages, so every link must go to an allow-listed page of your website
+describe.runIf(!PAGES_ENABLED)(`${SUITE} (built-in pages off)`, () => {
+	it('serves no pages', async () => {
+		for (const path of ['/magic-link', '/magic-link/verify?token=x']) {
+			expect((await call(path)).status).toBe(404);
+		}
+
+		const form = await call('/magic-link/request', { form: { email: address('form') }, headers: { origin: DIRECTUS } });
+		expect(form.status).toBe(404);
+	});
+
+	it('requires redirect_url, so no email ever links to a missing page', async () => {
+		const email = address('no-redirect');
+		await createUser(email);
+
+		const res = await requestLink(email);
+		expect(res.status).toBe(400);
+		expect(errorCode(res)).toBe('INVALID_PAYLOAD');
+		expect(res.json!['errors'][0].message).toContain('redirect_url');
+
+		await sleep(1000);
+		expect(await mailsTo(email)).toHaveLength(0);
+	});
+
+	it('signs in through your website', async () => {
+		const email = address('website');
+		const id = await createUser(email);
+		await requestLink(email, { redirect_url: 'http://localhost:3000/auth/magic' });
+
+		const link = linkFrom((await waitForMails(email))[0]!);
+		expect(`${link.origin}${link.pathname}`).toBe('http://localhost:3000/auth/magic');
+
+		const res = await verify(link.searchParams.get('token')!, { mode: 'json' });
+		expect(res.status).toBe(200);
+		expect(jwtUserId(res.json!['data'].access_token)).toBe(id);
 	});
 });

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Runs the e2e suite against each "<directus version>:<database>" target.
-# Usage: scripts/e2e.sh [target ...]   e.g. scripts/e2e.sh 12.4.0:postgres 11.0.0:sqlite
+# Runs the e2e suite against each "<directus version>:<database>[:nopages]" target.
+# Usage: scripts/e2e.sh [target ...]   e.g. scripts/e2e.sh 12.4.0:postgres 11.0.0:sqlite 12.4.0:sqlite:nopages
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
 TARGETS=("$@")
 if [ ${#TARGETS[@]} -eq 0 ]; then
-	TARGETS=(11.0.0:sqlite 11.9.3:postgres 11.17.4:mysql 11.17.4:postgres 12.0.0:sqlite 12.4.0:postgres 12.4.0:mysql)
+	TARGETS=(11.0.0:sqlite 11.9.3:postgres 11.17.4:mysql 11.17.4:postgres 12.0.0:sqlite 12.4.0:postgres 12.4.0:mysql 12.4.0:sqlite:nopages)
 fi
 
 COMPOSE=(docker compose -f test/e2e/docker-compose.yml)
@@ -20,8 +20,13 @@ results=()
 failed=0
 
 for target in "${TARGETS[@]}"; do
-	version=${target%%:*}
-	db=${target##*:}
+	IFS=: read -r version db mode <<<"$target"
+
+	case "${mode:-}" in
+		'') export MAGIC_LINK_ENABLE_PAGES=true ;;
+		nopages) export MAGIC_LINK_ENABLE_PAGES=false ;;
+		*) echo "Unknown mode: $mode" >&2; exit 1 ;;
+	esac
 
 	case "$db" in
 		sqlite) export DB_CLIENT=sqlite3 DB_HOST= DB_PORT= ;;
@@ -31,7 +36,7 @@ for target in "${TARGETS[@]}"; do
 	esac
 
 	export DIRECTUS_VERSION=$version
-	echo "::: Directus $version on $db"
+	echo "::: Directus $version on $db${mode:+ ($mode)}"
 
 	"${COMPOSE[@]}" --profile "$db" down -v --remove-orphans >/dev/null 2>&1 || true
 	[ "$db" = sqlite ] || "${COMPOSE[@]}" --profile "$db" up -d --wait "$db" >/dev/null
@@ -43,9 +48,9 @@ for target in "${TARGETS[@]}"; do
 	done
 
 	if pnpm exec vitest run --config vitest.e2e.config.ts --reporter=verbose; then
-		results+=("PASS  $version $db")
+		results+=("PASS  $target")
 	else
-		results+=("FAIL  $version $db")
+		results+=("FAIL  $target")
 		failed=1
 		"${COMPOSE[@]}" logs directus | tail -50
 	fi

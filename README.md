@@ -281,7 +281,7 @@ The `json:` prefix is Directus' own way of marking an env value as JSON. Without
 | `MAGIC_LINK_MAX_REQUESTS_PER_HOUR`                           | `5`                      | Emails per address per hour, inactive-account emails included. `0` turns the limit off.                           |
 | `MAGIC_LINK_MAX_REQUESTS_PER_IP_PER_HOUR`                    | `20`                     | Requests per IP per hour, answered with `429`. `0` turns the limit off.                                           |
 | `MAGIC_LINK_STALL_TIME`                                      | `LOGIN_STALL_TIME` (500) | Minimum response time in ms, so timing doesn't reveal which accounts exist.                                       |
-| `MAGIC_LINK_ENABLE_PAGES`                                    | `true`                   | Turn the [built-in pages](#built-in-pages-for-data-studio-users) on or off.                                       |
+| `MAGIC_LINK_ENABLE_PAGES`                                    | `false`                  | Turn the [built-in pages](#built-in-pages-for-data-studio-users) on or off.                                       |
 | `MAGIC_LINK_DEFAULT_REDIRECT`                                | `/admin`                 | Where the built-in pages go after sign-in.                                                                        |
 | `MAGIC_LINK_TABLE`                                           | `extension_magic_link`   | Name of the token/audit table.                                                                                    |
 | `MAGIC_LINK_RETENTION_DAYS`                                  | `30`                     | Audit rows older than this are deleted every hour.                                                                |
@@ -296,10 +296,10 @@ The `json:` prefix is Directus' own way of marking an env value as JSON. Without
 
 The response is `204` whatever happens to the account. The other responses are:
 
-- `400` if the email is malformed, if `redirect_url` isn't in `MAGIC_LINK_URL_ALLOW_LIST`, or if `redirect_url` is missing while the built-in pages are off;
+- `400` if the email is malformed, if `redirect_url` isn't in `MAGIC_LINK_URL_ALLOW_LIST`, or if `redirect_url` is missing (it's optional only when the built-in pages are on);
 - `429` (`REQUESTS_EXCEEDED`, with `Retry-After`) if the per-IP limit is reached.
 
-Without `redirect_url`, the email links to the [built-in pages](#built-in-pages-for-data-studio-users) instead.
+With the [built-in pages](#built-in-pages-for-data-studio-users) on, a request without `redirect_url` links to them instead.
 
 ### `POST /magic-link/verify`
 
@@ -326,7 +326,11 @@ The error codes are listed in [What users are told](#what-users-are-told).
 
 ## Built-in pages for Data Studio users
 
-If some of your users have access to the Data Studio, they can sign in to it with a magic link without a website. The extension ships script-free pages for this:
+If some of your users have access to the Data Studio, they can sign in to it with a magic link without a website. The extension ships script-free pages for this. They're off by default; turn them on with:
+
+```bash
+MAGIC_LINK_ENABLE_PAGES=true
+```
 
 - `https://admin.example.com/magic-link` is the sign-in form. After signing in, users land on `/admin`.
 - Add a link to it in _Settings → Project → Public Note_, which is shown on the Data Studio login screen. Directus doesn't let extensions add buttons to the login screen itself.
@@ -335,14 +339,14 @@ If some of your users have access to the Data Studio, they can sign in to it wit
 
 Opening the link from the email shows a confirmation page, or the reason the link can't be used. The link is only used up when the user presses **Sign in**, so email scanners that open links can't burn it.
 
-If you only use your own website, set `MAGIC_LINK_ENABLE_PAGES=false`. Requests must then include a `redirect_url`.
+While the pages are on, a request without `redirect_url` links to them instead of your website.
 
 ## Going to production
 
 - [ ] `PUBLIC_URL` is the public HTTPS address of Directus.
 - [ ] `LOG_HTTP_IGNORE_PATHS=/magic-link/verify` is set, so sign-in links aren't written to the HTTP log (see [Limitations](#limitations)).
 - [ ] `MAGIC_LINK_URL_ALLOW_LIST` lists only your real callback pages.
-- [ ] `MAGIC_LINK_ENABLE_PAGES=false` is set if nobody uses the built-in pages.
+- [ ] The built-in pages are only on (`MAGIC_LINK_ENABLE_PAGES=true`) if Data Studio users need them.
 - [ ] Behind a proxy, `IP_TRUST_PROXY` is set so the per-IP limit sees real client addresses.
 - [ ] You've sent yourself a link, and it arrives and signs you in.
 
@@ -358,7 +362,8 @@ Every request is recorded in the `extension_magic_link` table with a `status` an
 | `400` "can't be used for magic links"                     | `redirect_url` isn't in `MAGIC_LINK_URL_ALLOW_LIST`. Scheme, host, port and path must match. The query string is ignored.                                                                                              |
 | The browser shows a CORS error                            | `CORS_ENABLED` / `CORS_ORIGIN` don't include your website's origin.                                                                                                                                                    |
 | Verify succeeds but the next request isn't signed in      | `credentials: 'include'` is missing, or Directus is on another site without `SameSite=None` and `Secure`.                                                                                                              |
-| Emails link to Directus instead of your website           | The request had no `redirect_url`.                                                                                                                                                                                     |
+| `400` "redirect_url is required"                          | The request had no `redirect_url`. It's only optional when the built-in pages are on.                                                                                                                                  |
+| Emails link to Directus instead of your website           | The built-in pages are on and the request had no `redirect_url`.                                                                                                                                                       |
 | The built-in pages answer "Cross-origin form submissions" | Directus was opened on an address other than `PUBLIC_URL`.                                                                                                                                                             |
 
 ## Differences from `/auth/login`
@@ -387,13 +392,15 @@ pnpm test:e2e 12.4.0:postgres 11.0.0:sqlite   # specific targets
 
 Dependencies are pinned to exact versions, and `.npmrc` sets `save-exact`, so `pnpm add` keeps pinning.
 
-The e2e suite runs the real extension inside `directus/directus` images and sends real SMTP mail to Mailpit. By default it runs 52 scenarios against each of these targets:
+The e2e suite runs the real extension inside `directus/directus` images and sends real SMTP mail to Mailpit. By default it runs 52 scenarios with the built-in pages on against each of these targets:
 
 - 11.0.0 on SQLite
 - 11.9.3 on Postgres
 - 11.17.4 on Postgres and on MySQL
 - 12.0.0 on SQLite
 - 12.4.0 on Postgres and on MySQL
+
+It also runs 3 scenarios with the pages off (the default), as `12.4.0:sqlite:nopages`. Add `:nopages` to any target to run that mode.
 
 ## License
 

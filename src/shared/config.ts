@@ -115,7 +115,7 @@ export function readConfig(env: Record<string, unknown>) {
 
 		urlAllowList: toList(env['MAGIC_LINK_URL_ALLOW_LIST']),
 		defaultRedirect: toText(env['MAGIC_LINK_DEFAULT_REDIRECT'], '/admin'),
-		enablePages: toBool(env['MAGIC_LINK_ENABLE_PAGES'], true),
+		enablePages: toBool(env['MAGIC_LINK_ENABLE_PAGES'], false),
 
 		allowedProviders: toList(env['MAGIC_LINK_ALLOWED_PROVIDERS'] ?? 'default'),
 		allowedRoles: toList(env['MAGIC_LINK_ALLOWED_ROLES']),

@@ -68,6 +68,8 @@ describe('readConfig', () => {
 		expect(config.ttl).toBe(15 * 60 * 1000);
 		expect(config.stallTime).toBe(500);
 		expect(config.requireTfa).toBe(true);
+		expect(config.enablePages).toBe(false);
+		expect(config.notifyInactive).toBe(true);
 		expect(config.refreshCookie).toEqual({
 			name: 'directus_refresh_token',
 			options: { httpOnly: true, domain: undefined, maxAge: 604_800_000, secure: false, sameSite: 'strict' },
