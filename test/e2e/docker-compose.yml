@@ -1,0 +1,71 @@
+name: magic-link-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: [postgres]
+    environment:
+      POSTGRES_USER: directus
+      POSTGRES_PASSWORD: directus
+      POSTGRES_DB: directus
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'directus']
+      interval: 2s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4
+    profiles: [mysql]
+    environment:
+      MYSQL_ROOT_PASSWORD: directus
+      MYSQL_DATABASE: directus
+      MYSQL_USER: directus
+      MYSQL_PASSWORD: directus
+    healthcheck:
+      test: ['CMD', 'mysql', '-h', '127.0.0.1', '-udirectus', '-pdirectus', '-e', 'SELECT 1', 'directus']
+      interval: 2s
+      retries: 60
+
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+    ports:
+      - '${MAILPIT_PORT:-8125}:8025'
+
+  directus:
+    image: directus/directus:${DIRECTUS_VERSION:-12.4.0}
+    restart: on-failure
+    ports:
+      - '${DIRECTUS_PORT:-8155}:8055'
+    volumes:
+      - ../../dist:/directus/extensions/directus-extension-magic-link/dist:ro
+      - ../../package.json:/directus/extensions/directus-extension-magic-link/package.json:ro
+      - ./fixtures/extensions/magic-link-test:/directus/extensions/magic-link-test:ro
+      - ./fixtures/templates:/directus/templates
+    environment:
+      SECRET: e2e-secret-e2e-secret-e2e-secret-e2e
+      PUBLIC_URL: http://localhost:${DIRECTUS_PORT:-8155}
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: adminpass
+      TELEMETRY: 'false'
+      LOG_LEVEL: warn
+      DB_CLIENT: ${DB_CLIENT:-sqlite3}
+      DB_FILENAME: /directus/database/data.db
+      DB_HOST: ${DB_HOST:-}
+      DB_PORT: ${DB_PORT:-}
+      DB_DATABASE: directus
+      DB_USER: directus
+      DB_PASSWORD: directus
+      IP_CUSTOM_HEADER: x-test-ip
+      EMAIL_TRANSPORT: smtp
+      EMAIL_SMTP_HOST: mailpit
+      EMAIL_SMTP_PORT: '1025'
+      EMAIL_SMTP_IGNORE_TLS: 'true'
+      EMAIL_FROM: noreply@example.com
+      EMAIL_TEMPLATES_PATH: /directus/templates
+      MAGIC_LINK_EMAIL_FROM: Acme Login <login@acme.test>
+      MAGIC_LINK_EMAIL_SUBJECT: '{"en-US": "{{ projectName }} sign-in for {{ user.first_name }}", "fr-FR": "Connexion {{ projectName }} pour {{ user.first_name }}"}'
+      MAGIC_LINK_URL_ALLOW_LIST: http://localhost:3000/auth/magic
+      MAGIC_LINK_EMAIL_DENY_LIST: '@blocked.io,@bypass.io'
+      MAGIC_LINK_MAX_REQUESTS_PER_HOUR: '3'
+      MAGIC_LINK_MAX_REQUESTS_PER_IP_PER_HOUR: '5'
+      MAGIC_LINK_STALL_TIME: '300'

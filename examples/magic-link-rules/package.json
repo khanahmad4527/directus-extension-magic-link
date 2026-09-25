@@ -1,0 +1,12 @@
+{
+	"name": "directus-extension-magic-link-rules",
+	"description": "Example: custom validation rules for directus-extension-magic-link",
+	"version": "1.0.0",
+	"type": "module",
+	"directus:extension": {
+		"type": "hook",
+		"path": "index.js",
+		"source": "index.js",
+		"host": "^11.0.0 || ^12.0.0"
+	}
+}

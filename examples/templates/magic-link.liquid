@@ -1,0 +1,22 @@
+{% layout "base" %} {% block content %}
+
+<h1>Sign in to {{ projectName }}</h1>
+
+<p style="padding-bottom: 30px">
+  {% if greeting %}{{ greeting }}{% else %}Hi{% if user.first_name %} {{ user.first_name }}{% endif %}{% endif %},
+  use the button below to sign in as <b>{{ email }}</b>. If you didn't ask for this, you can ignore this email.
+</p>
+
+<a
+  class="button"
+  rel="noopener"
+  target="_blank"
+  href="{{ url }}"
+  style="font-size: 16px; font-weight: 600; color: #ffffff; text-decoration: none; display: inline-block; padding: 11px 24px; border-radius: 8px; background: {{ projectColor }}; border: 1px solid #ffffff;"
+>
+  <span>Sign in</span>
+</a>
+
+<p style="padding-top: 30px">This link expires in {{ expiresInMinutes }} minutes and can be used once.</p>
+
+{% endblock %}

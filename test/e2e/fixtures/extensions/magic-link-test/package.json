@@ -1,0 +1,11 @@
+{
+	"name": "magic-link-test",
+	"version": "1.0.0",
+	"type": "module",
+	"directus:extension": {
+		"type": "endpoint",
+		"path": "index.js",
+		"source": "index.js",
+		"host": "*"
+	}
+}

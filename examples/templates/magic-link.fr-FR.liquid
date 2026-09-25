@@ -1,0 +1,22 @@
+{% layout "base" %} {% block content %}
+
+<h1>Connexion à {{ projectName }}</h1>
+
+<p style="padding-bottom: 30px">
+  Bonjour{% if user.first_name %} {{ user.first_name }}{% endif %}, cliquez sur le bouton ci-dessous pour vous connecter
+  en tant que <b>{{ email }}</b>. Si vous n'avez pas demandé à vous connecter, vous pouvez ignorer cet e-mail.
+</p>
+
+<a
+  class="button"
+  rel="noopener"
+  target="_blank"
+  href="{{ url }}"
+  style="font-size: 16px; font-weight: 600; color: #ffffff; text-decoration: none; display: inline-block; padding: 11px 24px; border-radius: 8px; background: {{ projectColor }}; border: 1px solid #ffffff;"
+>
+  <span>Se connecter</span>
+</a>
+
+<p style="padding-top: 30px">Ce lien expire dans {{ expiresInMinutes }} minutes et ne peut être utilisé qu'une seule fois.</p>
+
+{% endblock %}
