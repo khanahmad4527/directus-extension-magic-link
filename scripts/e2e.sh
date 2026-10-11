@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 TARGETS=("$@")
 if [ ${#TARGETS[@]} -eq 0 ]; then
-	TARGETS=(11.0.0:sqlite 11.9.3:postgres 11.17.4:mysql 11.17.4:postgres 12.0.0:sqlite 12.4.0:postgres 12.4.0:mysql 12.4.0:sqlite:nopages)
+	TARGETS=(11.0.0:sqlite 11.9.3:postgres 11.17.4:mysql 11.17.4:postgres 12.0.0:sqlite 12.4.0:postgres 12.5.0:postgres 12.5.0:mysql 12.5.0:sqlite:nopages)
 fi
 
 COMPOSE=(docker compose -f test/e2e/docker-compose.yml)

@@ -32,7 +32,7 @@ services:
       - '${MAILPIT_PORT:-8125}:8025'
 
   directus:
-    image: directus/directus:${DIRECTUS_VERSION:-12.4.0}
+    image: directus/directus:${DIRECTUS_VERSION:-12.5.0}
     restart: on-failure
     ports:
       - '${DIRECTUS_PORT:-8155}:8055'

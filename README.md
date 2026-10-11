@@ -42,6 +42,8 @@ The examples use Directus at `https://admin.example.com` and your website at `ht
 
 Install the extension like any other Directus extension: see [Including extensions](https://directus.com/docs/self-hosting/including-extensions) in the Directus docs. To build it from source, run `pnpm install && pnpm build`; the build goes to `dist/`.
 
+To install it from the Directus Marketplace, set `MARKETPLACE_TRUST=all`. The extension signs users in through Directus' own services and database, so it can't run in the extension sandbox, and with the default `MARKETPLACE_TRUST=sandbox` the Marketplace only offers sandboxed extensions.
+
 On startup the extension creates its table, `extension_magic_link`, which holds the tokens and an audit trail of every request. No migration is needed.
 
 ### 2. Configure Directus
@@ -398,9 +400,10 @@ The e2e suite runs the real extension inside `directus/directus` images and send
 - 11.9.3 on Postgres
 - 11.17.4 on Postgres and on MySQL
 - 12.0.0 on SQLite
-- 12.4.0 on Postgres and on MySQL
+- 12.4.0 on Postgres
+- 12.5.0 on Postgres and on MySQL
 
-It also runs 3 scenarios with the pages off (the default), as `12.4.0:sqlite:nopages`. Add `:nopages` to any target to run that mode.
+It also runs 3 scenarios with the pages off (the default), as `12.5.0:sqlite:nopages`. Add `:nopages` to any target to run that mode.
 
 ## License
 

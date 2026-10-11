@@ -43,8 +43,9 @@ jobs:
           - 11.17.4:postgres
           - 12.0.0:sqlite
           - 12.4.0:postgres
-          - 12.4.0:mysql
-          - 12.4.0:sqlite:nopages
+          - 12.5.0:postgres
+          - 12.5.0:mysql
+          - 12.5.0:sqlite:nopages
     name: e2e (${{ matrix.target }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
