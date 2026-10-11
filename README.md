@@ -405,6 +405,25 @@ The e2e suite runs the real extension inside `directus/directus` images and send
 
 It also runs 3 scenarios with the pages off (the default), as `12.5.0:sqlite:nopages`. Add `:nopages` to any target to run that mode.
 
+### Releasing
+
+New versions are published to npm by [.github/workflows/release.yml](.github/workflows/release.yml) through npm trusted publishing, so no npm token is stored anywhere.
+
+One-time setup, run by a package owner (it asks for your npm 2FA):
+
+```bash
+npx npm@12.2.0 trust github directus-extension-magic-link --file release.yml --repository khanahmad4527/directus-extension-magic-link --allow-publish
+```
+
+npm expects the first publish through it within 2 days, so run it shortly before a release. If it expires, run it again.
+
+To release:
+
+1. Bump `version` in `package.json` and push to `main`.
+2. Once CI passes, create a GitHub release whose tag is `v` plus that version, for example `v1.0.1`.
+
+The workflow refuses to publish if the tag and `package.json` disagree, and runs the same checks as `pnpm publish` before uploading.
+
 ## License
 
 [MIT](LICENSE)
