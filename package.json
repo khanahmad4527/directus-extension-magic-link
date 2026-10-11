@@ -1,7 +1,7 @@
 {
 	"name": "directus-extension-magic-link",
 	"description": "Passwordless magic-link login for Directus that follows the core login rules (user status, provider, 2FA, sessions), with Liquid email templates and pluggable validation.",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"license": "MIT",
 	"author": "Ahmad Khan <khanahmad4527@gmail.com>",
 	"homepage": "https://github.com/khanahmad4527/directus-extension-magic-link#readme",

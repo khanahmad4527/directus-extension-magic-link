@@ -60,7 +60,7 @@ CORS_ENABLED=true
 CORS_ORIGIN=https://example.com
 ```
 
-**Why `PUBLIC_URL` is the Directus address.** `PUBLIC_URL` is always where Directus itself runs. Directus uses it for its own URLs, such as the project logo in emails. The link in a magic-link email doesn't come from `PUBLIC_URL`. It comes from the `redirect_url` your sign-in form sends, so users land on `https://example.com/auth/magic?token=…`, on your website.
+**Why `PUBLIC_URL` is the Directus address.** `PUBLIC_URL` is always where Directus itself runs. Directus uses it for its own URLs, such as the project logo in emails. The link in a magic-link email doesn't come from `PUBLIC_URL`. It comes from the `redirect_url` your sign-in form sends, so users land on `https://example.com/auth/magic?token=…`, on your website. Sign-in through your website works even if `PUBLIC_URL` is left at Directus' default (`/`); emails then go out without the logo.
 
 **Email.** If Directus can already send password-reset emails, there's nothing to do. Otherwise [set up Directus email](https://directus.com/docs/configuration/email) first. To give magic-link emails their own sender:
 
@@ -126,7 +126,8 @@ switch (await verify()) {
 		break; // ask for the 2FA code, then call verify(code) with the SAME token
 	case 'TOKEN_EXPIRED':
 	case 'INVALID_TOKEN':
-		break; // "This link has expired or was already used", and offer a new one
+	case 'OTP_LIMIT_EXCEEDED':
+		break; // "This link can't be used any more", and offer a new one
 	case 'USER_SUSPENDED':
 	case 'USER_INACTIVE':
 	case 'FORBIDDEN':
@@ -179,16 +180,19 @@ The one error the form does show is **too many attempts from the same IP** (`429
 
 **When they open a link, the reason is specific.** Whoever holds the link has already proven they own the mailbox, so being clear hides nothing from anyone else:
 
-| Code             | Status | Meaning                                                              |
-| ---------------- | ------ | -------------------------------------------------------------------- |
-| `TOKEN_EXPIRED`  | 401    | The link is older than `MAGIC_LINK_TTL`.                             |
-| `INVALID_TOKEN`  | 403    | The link was already used, was replaced by a newer one, or is wrong. |
-| `USER_SUSPENDED` | 401    | The account was suspended.                                           |
-| `USER_INACTIVE`  | 401    | The account is no longer active (invited, draft or archived).        |
-| `FORBIDDEN`      | 403    | Your rules or a hook refuse this account.                            |
-| `INVALID_OTP`    | 401    | The 2FA code is missing or wrong. The link stays valid.              |
+| Code                 | Status | Meaning                                                                                           |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------- |
+| `TOKEN_EXPIRED`      | 401    | The link is older than `MAGIC_LINK_TTL`.                                                          |
+| `INVALID_TOKEN`      | 403    | The link was already used, was replaced by a newer one, or is wrong.                              |
+| `USER_SUSPENDED`     | 401    | The account was suspended.                                                                        |
+| `USER_INACTIVE`      | 401    | The account is no longer active (invited, draft or archived).                                     |
+| `FORBIDDEN`          | 403    | Your rules or a hook refuse this account.                                                         |
+| `INVALID_OTP`        | 401    | The 2FA code is missing or wrong. The link stays valid.                                           |
+| `OTP_LIMIT_EXCEEDED` | 403    | Too many wrong 2FA codes (`MAGIC_LINK_MAX_OTP_ATTEMPTS`, 5 by default). The link no longer works. |
 
-`TOKEN_EXPIRED`, `INVALID_TOKEN`, `USER_SUSPENDED`, `FORBIDDEN` and `INVALID_OTP` are Directus' own error codes. `USER_INACTIVE` is the extension's, because Directus has no error for these statuses.
+`TOKEN_EXPIRED`, `INVALID_TOKEN`, `USER_SUSPENDED`, `FORBIDDEN` and `INVALID_OTP` are Directus' own error codes. `USER_INACTIVE` and `OTP_LIMIT_EXCEEDED` are the extension's, because Directus has no error for these cases.
+
+**Wrong 2FA codes are limited twice.** Each link stops working after `MAGIC_LINK_MAX_OTP_ATTEMPTS` wrong codes, even when they're sent simultaneously. Wrong codes since the user's last magic-link sign-in also count toward Directus' `auth_login_attempts` (25 by default): at that number the account is suspended, as with `/auth/login`. Requesting new links doesn't reset that count; only a successful sign-in does.
 
 Admins can always see the exact reason in the `extension_magic_link` table.
 
@@ -266,27 +270,28 @@ The `json:` prefix is Directus' own way of marking an env value as JSON. Without
 
 ## Configuration
 
-| Variable                                                     | Default                  | Description                                                                                                       |
-| ------------------------------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `MAGIC_LINK_URL_ALLOW_LIST`                                  | —                        | Pages allowed as `redirect_url`. Works like `PASSWORD_RESET_URL_ALLOW_LIST`.                                      |
-| `MAGIC_LINK_EMAIL_FROM`                                      | `EMAIL_FROM`             | Sender. `login@acme.com` or `Acme Login <login@acme.com>`.                                                        |
-| `MAGIC_LINK_EMAIL_FROM_NAME`                                 | project name             | Sender name. A name other than the project name requires Directus 11.10+.                                         |
-| `MAGIC_LINK_EMAIL_SUBJECT`                                   | built-in, translated     | Subject of the sign-in email: a Liquid string, or a map per language.                                             |
-| `MAGIC_LINK_EMAIL_TEMPLATE`                                  | `magic-link`             | Template name in `EMAIL_TEMPLATES_PATH`, tried with language suffixes first. Falls back to the built-in template. |
-| `MAGIC_LINK_NOTIFY_INACTIVE`                                 | `true`                   | Email users whose account isn't active instead of sending nothing.                                                |
-| `MAGIC_LINK_INACTIVE_EMAIL_SUBJECT`                          | built-in, translated     | Subject of the inactive-account email.                                                                            |
-| `MAGIC_LINK_TTL`                                             | `15m`                    | How long a link is valid (`ms` format or milliseconds).                                                           |
-| `MAGIC_LINK_ALLOWED_PROVIDERS`                               | `default`                | Auth providers whose users can use magic links.                                                                   |
-| `MAGIC_LINK_ALLOWED_ROLES` / `MAGIC_LINK_DISALLOWED_ROLES`   | —                        | Role IDs to allow or block.                                                                                       |
-| `MAGIC_LINK_EMAIL_ALLOW_LIST` / `MAGIC_LINK_EMAIL_DENY_LIST` | —                        | Email patterns (see [Custom rules](#custom-rules)).                                                               |
-| `MAGIC_LINK_REQUIRE_TFA`                                     | `true`                   | Ask users with 2FA for their code.                                                                                |
-| `MAGIC_LINK_MAX_REQUESTS_PER_HOUR`                           | `5`                      | Emails per address per hour, inactive-account emails included. `0` turns the limit off.                           |
-| `MAGIC_LINK_MAX_REQUESTS_PER_IP_PER_HOUR`                    | `20`                     | Requests per IP per hour, answered with `429`. `0` turns the limit off.                                           |
-| `MAGIC_LINK_STALL_TIME`                                      | `LOGIN_STALL_TIME` (500) | Minimum response time in ms, so timing doesn't reveal which accounts exist.                                       |
-| `MAGIC_LINK_ENABLE_PAGES`                                    | `false`                  | Turn the [built-in pages](#built-in-pages-for-data-studio-users) on or off.                                       |
-| `MAGIC_LINK_DEFAULT_REDIRECT`                                | `/admin`                 | Where the built-in pages go after sign-in.                                                                        |
-| `MAGIC_LINK_TABLE`                                           | `extension_magic_link`   | Name of the token/audit table.                                                                                    |
-| `MAGIC_LINK_RETENTION_DAYS`                                  | `30`                     | Audit rows older than this are deleted every hour.                                                                |
+| Variable                                                     | Default                  | Description                                                                                                         |
+| ------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `MAGIC_LINK_URL_ALLOW_LIST`                                  | —                        | Pages allowed as `redirect_url`. Works like `PASSWORD_RESET_URL_ALLOW_LIST`.                                        |
+| `MAGIC_LINK_EMAIL_FROM`                                      | `EMAIL_FROM`             | Sender. `login@acme.com` or `Acme Login <login@acme.com>`.                                                          |
+| `MAGIC_LINK_EMAIL_FROM_NAME`                                 | project name             | Sender name. A name other than the project name requires Directus 11.10+.                                           |
+| `MAGIC_LINK_EMAIL_SUBJECT`                                   | built-in, translated     | Subject of the sign-in email: a Liquid string, or a map per language.                                               |
+| `MAGIC_LINK_EMAIL_TEMPLATE`                                  | `magic-link`             | Template name in `EMAIL_TEMPLATES_PATH`, tried with language suffixes first. Falls back to the built-in template.   |
+| `MAGIC_LINK_NOTIFY_INACTIVE`                                 | `true`                   | Email users whose account isn't active instead of sending nothing.                                                  |
+| `MAGIC_LINK_INACTIVE_EMAIL_SUBJECT`                          | built-in, translated     | Subject of the inactive-account email.                                                                              |
+| `MAGIC_LINK_TTL`                                             | `15m`                    | How long a link is valid (`ms` format or milliseconds).                                                             |
+| `MAGIC_LINK_ALLOWED_PROVIDERS`                               | `default`                | Auth providers whose users can use magic links.                                                                     |
+| `MAGIC_LINK_ALLOWED_ROLES` / `MAGIC_LINK_DISALLOWED_ROLES`   | —                        | Role IDs to allow or block.                                                                                         |
+| `MAGIC_LINK_EMAIL_ALLOW_LIST` / `MAGIC_LINK_EMAIL_DENY_LIST` | —                        | Email patterns (see [Custom rules](#custom-rules)).                                                                 |
+| `MAGIC_LINK_REQUIRE_TFA`                                     | `true`                   | Ask users with 2FA for their code.                                                                                  |
+| `MAGIC_LINK_MAX_REQUESTS_PER_HOUR`                           | `5`                      | Emails per address per hour, inactive-account emails included. `0` turns the limit off.                             |
+| `MAGIC_LINK_MAX_REQUESTS_PER_IP_PER_HOUR`                    | `20`                     | Requests per IP per hour, answered with `429`. `0` turns the limit off.                                             |
+| `MAGIC_LINK_MAX_OTP_ATTEMPTS`                                | `5`                      | Wrong 2FA codes before a link stops working. `0` turns the per-link limit off; `auth_login_attempts` still applies. |
+| `MAGIC_LINK_STALL_TIME`                                      | `LOGIN_STALL_TIME` (500) | Minimum response time in ms, so timing doesn't reveal which accounts exist.                                         |
+| `MAGIC_LINK_ENABLE_PAGES`                                    | `false`                  | Turn the [built-in pages](#built-in-pages-for-data-studio-users) on or off.                                         |
+| `MAGIC_LINK_DEFAULT_REDIRECT`                                | `/admin`                 | Where the built-in pages go after sign-in.                                                                          |
+| `MAGIC_LINK_TABLE`                                           | `extension_magic_link`   | Name of the token/audit table.                                                                                      |
+| `MAGIC_LINK_RETENTION_DAYS`                                  | `30`                     | Audit rows older than this are deleted every hour.                                                                  |
 
 ## API reference
 
@@ -332,7 +337,10 @@ If some of your users have access to the Data Studio, they can sign in to it wit
 
 ```bash
 MAGIC_LINK_ENABLE_PAGES=true
+PUBLIC_URL=https://admin.example.com
 ```
+
+The pages need `PUBLIC_URL` to be Directus' full public address, because the links in the emails point to them. Without it, they answer `503` with an explanation, and Directus logs a warning at startup.
 
 - `https://admin.example.com/magic-link` is the sign-in form. After signing in, users land on `/admin`.
 - Add a link to it in _Settings → Project → Public Note_, which is shown on the Data Studio login screen. Directus doesn't let extensions add buttons to the login screen itself.
@@ -367,17 +375,19 @@ Every request is recorded in the `extension_magic_link` table with a `status` an
 | `400` "redirect_url is required"                          | The request had no `redirect_url`. It's only optional when the built-in pages are on.                                                                                                                                  |
 | Emails link to Directus instead of your website           | The built-in pages are on and the request had no `redirect_url`.                                                                                                                                                       |
 | The built-in pages answer "Cross-origin form submissions" | Directus was opened on an address other than `PUBLIC_URL`.                                                                                                                                                             |
+| `503` "PUBLIC_URL must be the full public address"        | The built-in pages are on, but `PUBLIC_URL` is Directus' default `/` or not a full `https://…` address.                                                                                                                |
+| `OTP_LIMIT_EXCEEDED`, or the account got suspended        | Too many wrong 2FA codes. The row says `locked`; the user requests a new link. A suspended account has to be reactivated by an admin.                                                                                  |
 
 ## Differences from `/auth/login`
 
 - Core `auth.login` hooks **don't** run for magic-link sign-ins, because extensions can't send events on Directus' core emitter. Use `magic-link.login` instead. `auth.jwt` filters **do** run, with `type: "refresh"`.
-- `auth_login_attempts` (locking an account after failed passwords) doesn't apply, because no password is involved. The rate limits do the same job.
+- `auth_login_attempts` counts wrong 2FA codes, and suspends the account at the limit, like `/auth/login`. Directus doesn't let extensions use its own counter, so wrong passwords on `/auth/login` and wrong codes on magic links are counted separately.
 - For users whose role requires 2FA but who haven't set it up yet, the token doesn't include the `enforce_tfa` flag. This is the same as a normal Directus token after its first refresh.
 
 ## Limitations
 
 - **Links appear in Directus' HTTP log.** Directus logs request URLs and only redacts `access_token`. Links to your website don't reach Directus' log, but the built-in pages' `GET /magic-link/verify?token=…` does. The token is single-use and expires after `MAGIC_LINK_TTL`, but anyone who can read the log could use a link before its owner does. Set `LOG_HTTP_IGNORE_PATHS=/magic-link/verify` (supported on Directus 11 and 12) to keep these requests out of the log.
-- **The per-email limit is approximate under bursts.** It's counted in the background after the response is sent, so a burst of simultaneous requests can go slightly over it. The per-IP limit is checked before responding.
+- **Bursts of requests may be refused entirely.** Every request is recorded before anything is counted, so simultaneous requests never get past the per-email or per-IP limit. The price is that requests arriving at exactly the same moment can all be refused, not just the ones over the limit.
 - **Failed emails aren't retried.** They're marked `failed` and the user requests a new link.
 - **The `user` column has no foreign key**, so the table works on every database Directus supports. If a user is deleted, their links stop working, and the rows are removed after `MAGIC_LINK_RETENTION_DAYS`.
 
@@ -394,7 +404,7 @@ pnpm test:e2e 12.4.0:postgres 11.0.0:sqlite   # specific targets
 
 Dependencies are pinned to exact versions, and `.npmrc` sets `save-exact`, so `pnpm add` keeps pinning.
 
-The e2e suite runs the real extension inside `directus/directus` images and sends real SMTP mail to Mailpit. By default it runs 52 scenarios with the built-in pages on against each of these targets:
+The e2e suite runs the real extension inside `directus/directus` images and sends real SMTP mail to Mailpit. By default it runs 58 scenarios, with the built-in pages on and a full `PUBLIC_URL`, against each of these targets:
 
 - 11.0.0 on SQLite
 - 11.9.3 on Postgres
@@ -403,7 +413,13 @@ The e2e suite runs the real extension inside `directus/directus` images and send
 - 12.4.0 on Postgres
 - 12.5.0 on Postgres and on MySQL
 
-It also runs 3 scenarios with the pages off (the default), as `12.5.0:sqlite:nopages`. Add `:nopages` to any target to run that mode.
+Add a mode to a target to test another setup:
+
+| Mode       | Setup                                                                 | Default targets                                                            |
+| ---------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `defaults` | A default Directus: pages off, `PUBLIC_URL` left at `/` (4 scenarios) | `12.5.0:sqlite:defaults`                                                   |
+| `nourl`    | Pages on, `PUBLIC_URL` left at `/` (3 scenarios)                      | `12.5.0:sqlite:nourl`                                                      |
+| `upgrade`  | Starts the published 1.0.0 first, then this build (the 58 scenarios)  | `11.0.0:sqlite:upgrade`, `12.5.0:postgres:upgrade`, `12.5.0:mysql:upgrade` |
 
 ### Releasing
 

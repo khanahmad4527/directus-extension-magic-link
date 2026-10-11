@@ -16,7 +16,7 @@ function layout(content: string): string {
 <tr><td align="center" style="padding:40px 16px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;">
 <tr><td style="background:{{ projectColor }};border-radius:12px 12px 0 0;padding:24px 32px;">
-<img src="{{ projectLogo }}" alt="{{ projectName | escape }}" height="32" style="height:32px;border:0;display:block;" />
+{% if projectLogo contains "://" %}<img src="{{ projectLogo }}" alt="{{ projectName | escape }}" height="32" style="height:32px;border:0;display:block;" />{% endif %}
 </td></tr>
 <tr><td style="padding:32px;">
 ${content}

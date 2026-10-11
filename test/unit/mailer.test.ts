@@ -115,4 +115,12 @@ describe('mailer', () => {
 		expect(sent[0]!['text']).toContain("ce compte Acme n'est pas actif");
 		expect(sent[0]!['html']).not.toContain('token=');
 	});
+
+	it('leaves out the logo when PUBLIC_URL is not a full address, instead of linking a broken image', async () => {
+		await mailer({ PUBLIC_URL: '/' }).send('link', input());
+		expect(sent[0]!['html']).not.toContain('<img');
+
+		await mailer({ PUBLIC_URL: 'https://cms.acme.com' }).send('link', input());
+		expect(sent[1]!['html']).toContain('<img src="https://cms.acme.com/admin/img/directus-white.png"');
+	});
 });

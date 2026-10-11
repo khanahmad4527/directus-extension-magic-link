@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { InvalidPayloadError, InvalidTokenError, isDirectusError } from '@directus/errors';
+import { InvalidPayloadError, InvalidTokenError, isDirectusError, ServiceUnavailableError } from '@directus/errors';
 import { defineEndpoint } from '@directus/extensions-sdk';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { Liquid } from 'liquidjs';
@@ -8,7 +8,7 @@ import { FALLBACK_LOCALE, negotiateLocale, parseAcceptLanguage, renderMessages }
 import { readSettings } from '../shared/settings.js';
 import { isSafeRedirect, isUrlAllowed, isValidEmail } from '../shared/rules.js';
 import { confirmPage, type LinkProblem, type PageContext, problemPage, requestPage, sentPage } from './pages.js';
-import { type AuthMode, createMagicLinkService, type RequestInfo } from './service.js';
+import { type Admission, type AuthMode, createMagicLinkService, type RequestInfo } from './service.js';
 
 const MODES: AuthMode[] = ['json', 'cookie', 'session'];
 const MAX_FORM_BYTES = 16 * 1024;
@@ -24,8 +24,11 @@ const asyncHandler =
 
 const text = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null);
 
+const PUBLIC_URL_MISSING = 'PUBLIC_URL must be the full public address of Directus, for example https://admin.example.com';
+
 const PROBLEM_BY_CODE: Record<string, LinkProblem> = {
 	TOKEN_EXPIRED: 'expired',
+	OTP_LIMIT_EXCEEDED: 'locked',
 	USER_SUSPENDED: 'suspended',
 	USER_INACTIVE: 'inactive',
 	FORBIDDEN: 'forbidden',
@@ -42,9 +45,13 @@ export default defineEndpoint({
 		const { env, logger, database } = context;
 		const config = readConfig(env);
 		const service = createMagicLinkService(config, context);
-		const base = `${config.publicUrl}/magic-link`;
-		const publicOrigin = new URL(config.publicUrl).origin;
+		const base = config.publicUrl ? `${config.publicUrl}/magic-link` : null;
+		const publicOrigin = config.publicUrl ? new URL(config.publicUrl).origin : null;
 		const liquid = new Liquid();
+
+		if (config.enablePages && !base) {
+			logger.warn(`[magic-link] The built-in pages can't be used: ${PUBLIC_URL_MISSING}`);
+		}
 
 		function requestInfo(req: Request): RequestInfo {
 			// Resolved by Directus, honouring IP_TRUST_PROXY and IP_CUSTOM_HEADER
@@ -102,10 +109,16 @@ export default defineEndpoint({
 			return target && isSafeRedirect(target, config.urlAllowList) ? target : null;
 		}
 
-		function pagesDisabled(res: Response): boolean {
-			if (config.enablePages) return false;
-			res.status(404).json({ errors: [{ message: 'Route not found', extensions: { code: 'ROUTE_NOT_FOUND' } }] });
-			return true;
+		// The built-in pages' base URL, or null after answering 404 when they're off
+		function pagesBase(res: Response): string | null {
+			if (!config.enablePages) {
+				res.status(404).json({ errors: [{ message: 'Route not found', extensions: { code: 'ROUTE_NOT_FOUND' } }] });
+				return null;
+			}
+
+			if (!base) throw new ServiceUnavailableError({ service: 'magic-link', reason: PUBLIC_URL_MISSING });
+
+			return base;
 		}
 
 		// Input errors and the per-IP limit are reported; everything account-related runs in the background.
@@ -121,15 +134,23 @@ export default defineEndpoint({
 				throw new InvalidPayloadError({ reason: `URL "${redirectUrl}" can't be used for magic links` });
 			}
 
-			// Without the built-in pages the email would link to a page that doesn't exist
+			// Without redirect_url the email links to the built-in pages, which need to be on and reachable
 			if (!redirectUrl && !config.enablePages) {
 				throw new InvalidPayloadError({ reason: '"redirect_url" is required because the built-in pages are disabled' });
 			}
 
+			if (!redirectUrl && !base) {
+				throw new ServiceUnavailableError({
+					service: 'magic-link',
+					reason: `"redirect_url" is required while the built-in pages can't be used. ${PUBLIC_URL_MISSING}`,
+				});
+			}
+
 			const info = requestInfo(req);
+			let admission: Admission;
 
 			try {
-				await service.assertIpAllowed(info.ip);
+				admission = await service.admit(address, info);
 			} catch (error) {
 				if (isDirectusError<{ reset: Date }>(error, 'REQUESTS_EXCEEDED')) {
 					res.set('Retry-After', String(Math.max(1, Math.ceil((error.extensions.reset.getTime() - Date.now()) / 1000))));
@@ -138,7 +159,7 @@ export default defineEndpoint({
 				throw error;
 			}
 
-			service.processRequest({ ...info, email: address, redirectUrl, pageRedirect }).catch((error: unknown) => {
+			service.processRequest({ ...info, ...admission, email: address, redirectUrl, pageRedirect }).catch((error: unknown) => {
 				logger.error(error, '[magic-link] request processing failed');
 			});
 
@@ -170,9 +191,11 @@ export default defineEndpoint({
 		router.get(
 			'/',
 			asyncHandler(async (req, res) => {
-				if (pagesDisabled(res)) return;
+				const pages = pagesBase(res);
+				if (!pages) return;
+
 				const page = await pageContext(req, [text(req.query['lang'])]);
-				res.type('html').send(requestPage(page, { action: `${base}/request`, redirect: safeRedirect(req.query['redirect']) }));
+				res.type('html').send(requestPage(page, { action: `${pages}/request`, redirect: safeRedirect(req.query['redirect']) }));
 			}),
 		);
 
@@ -180,7 +203,8 @@ export default defineEndpoint({
 		router.get(
 			'/verify',
 			asyncHandler(async (req, res) => {
-				if (pagesDisabled(res)) return;
+				const pages = pagesBase(res);
+				if (!pages) return;
 
 				const token = text(req.query['token']);
 				const state = token ? await service.inspect(token) : { error: new InvalidTokenError(), otpRequired: false, language: null };
@@ -193,13 +217,13 @@ export default defineEndpoint({
 					res
 						.status(status)
 						.type('html')
-						.send(problemPage(page, { problem, restart: `${base}/` }));
+						.send(problemPage(page, { problem, restart: `${pages}/` }));
 					return;
 				}
 
 				res.type('html').send(
 					confirmPage(page, {
-						action: `${base}/verify`,
+						action: `${pages}/verify`,
 						token,
 						redirect: safeRedirect(req.query['redirect']),
 						otpRequired: state.otpRequired,
@@ -218,7 +242,8 @@ export default defineEndpoint({
 					return;
 				}
 
-				if (pagesDisabled(res)) return;
+				const pages = pagesBase(res);
+				if (!pages) return;
 				assertSameOrigin(req);
 
 				const body = await readBody(req);
@@ -235,11 +260,11 @@ export default defineEndpoint({
 					res
 						.status(error.status)
 						.type('html')
-						.send(requestPage(page, { action: `${base}/request`, redirect, error: message }));
+						.send(requestPage(page, { action: `${pages}/request`, redirect, error: message }));
 					return;
 				}
 
-				res.type('html').send(sentPage(page, { restart: `${base}/?lang=${encodeURIComponent(page.t.locale)}` }));
+				res.type('html').send(sentPage(page, { restart: `${pages}/?lang=${encodeURIComponent(page.t.locale)}` }));
 			}),
 		);
 
@@ -247,9 +272,10 @@ export default defineEndpoint({
 			'/verify',
 			asyncHandler(async (req, res) => {
 				const form = isForm(req);
+				const pages = form ? pagesBase(res) : null;
 
 				if (form) {
-					if (pagesDisabled(res)) return;
+					if (!pages) return;
 					assertSameOrigin(req);
 				}
 
@@ -280,7 +306,7 @@ export default defineEndpoint({
 						res
 							.status(401)
 							.type('html')
-							.send(confirmPage(page, { action: `${base}/verify`, token, redirect, otpRequired: true, error: message }));
+							.send(confirmPage(page, { action: `${pages}/verify`, token, redirect, otpRequired: true, error: message }));
 						return;
 					}
 
@@ -290,7 +316,7 @@ export default defineEndpoint({
 					res
 						.status(status)
 						.type('html')
-						.send(problemPage(page, { problem, restart: `${base}/` }));
+						.send(problemPage(page, { problem, restart: `${pages}/` }));
 				}
 			}),
 		);

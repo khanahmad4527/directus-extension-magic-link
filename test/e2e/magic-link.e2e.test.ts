@@ -8,7 +8,8 @@ const DIRECTUS = process.env['DIRECTUS_URL'] ?? 'http://localhost:8155';
 const MAILPIT = process.env['MAILPIT_URL'] ?? 'http://localhost:8125';
 const TEMPLATES = path.resolve(import.meta.dirname, 'fixtures/templates');
 const RUN = randomUUID().slice(0, 8);
-const PAGES_ENABLED = process.env['MAGIC_LINK_ENABLE_PAGES'] !== 'false';
+// Set by scripts/e2e.sh: full | upgrade (pages on, full PUBLIC_URL), defaults (pages off, PUBLIC_URL "/"), nourl (pages on, PUBLIC_URL "/")
+const MODE = process.env['E2E_MODE'] ?? 'full';
 const SUITE = `Directus ${process.env['DIRECTUS_VERSION'] ?? ''} ${process.env['DB_CLIENT'] ?? ''}`.trim();
 
 type Json = Record<string, any>;
@@ -126,16 +127,17 @@ function linkFrom(mail: Mail): URL {
 	return new URL(match[1]!);
 }
 
-async function tokenFor(email: string): Promise<string> {
-	const [newest] = await waitForMails(email);
+async function tokenFor(email: string, count = 1): Promise<string> {
+	const [newest] = await waitForMails(email, count);
 	const token = linkFrom(newest!).searchParams.get('token');
 	if (!token) throw new Error('Missing token');
 	return token;
 }
 
-async function newToken(email: string): Promise<string> {
+// `count`: how many emails this address should have received, including this one
+async function newToken(email: string, count = 1): Promise<string> {
 	expect((await requestLink(email)).status).toBe(204);
-	return tokenFor(email);
+	return tokenFor(email, count);
 }
 
 const errorCode = (res: { json: Json | null }): string | undefined => res.json?.['errors']?.[0]?.extensions?.code;
@@ -181,7 +183,7 @@ beforeAll(async () => {
 	await admin('/access', 'POST', { role: roleId, policy: policy.id });
 });
 
-describe.runIf(PAGES_ENABLED)(SUITE, () => {
+describe.runIf(MODE === 'full' || MODE === 'upgrade')(SUITE, () => {
 	it('reports the Directus version under test', () => {
 		expect(directusVersion).toMatch(/^1[12]\./);
 	});
@@ -312,6 +314,27 @@ describe.runIf(PAGES_ENABLED)(SUITE, () => {
 			// Refused before anything account-related ran
 			await sleep(500);
 			expect(await events(email)).toHaveLength(0);
+		});
+
+		it('holds the per-IP limit against simultaneous requests', async () => {
+			const ip = randomIp();
+			const burst = await Promise.all(Array.from({ length: 30 }, (_, i) => requestLink(address(`ip-burst${i}`), {}, { 'x-test-ip': ip })));
+			const statuses = burst.map((res) => res.status);
+
+			expect(statuses.filter((status) => status === 204).length).toBeLessThanOrEqual(5);
+			expect(statuses.filter((status) => status === 429).length).toBeGreaterThanOrEqual(25);
+		});
+
+		it('holds the per-email limit against simultaneous requests', async () => {
+			const email = address('email-burst');
+			await createUser(email);
+
+			await Promise.all(Array.from({ length: 20 }, () => requestLink(email)));
+			await waitForRequestEvent(email, 20);
+
+			// Every request is recorded before any is counted, so a burst may be refused entirely, never over-admitted
+			expect((await events(email)).filter((event) => event['reason'] === 'rate_limited').length).toBeGreaterThanOrEqual(17);
+			expect((await mailsTo(email)).length).toBeLessThanOrEqual(3);
 		});
 	});
 
@@ -600,6 +623,77 @@ describe.runIf(PAGES_ENABLED)(SUITE, () => {
 			expect(ok.status).toBe(200);
 		});
 
+		it('stops a link after 5 wrong 2FA codes', async () => {
+			const email = address('otp-lock');
+			await createUser(email);
+			const secret = await enableTfa(email);
+			const token = await newToken(email);
+
+			for (let i = 0; i < 4; i++) expect(errorCode(await verify(token, { otp: totp(secret, 100 + i) }))).toBe('INVALID_OTP');
+
+			const fifth = await verify(token, { otp: totp(secret, 104) });
+			expect(fifth.status).toBe(403);
+			expect(errorCode(fifth)).toBe('OTP_LIMIT_EXCEEDED');
+
+			expect(errorCode(await verify(token, { otp: totp(secret) }))).toBe('OTP_LIMIT_EXCEEDED');
+		});
+
+		it('holds the 2FA limit against simultaneous guesses', async () => {
+			const email = address('otp-burst');
+			const id = await createUser(email);
+			const secret = await enableTfa(email);
+			const token = await newToken(email);
+
+			const guesses = await Promise.all(Array.from({ length: 30 }, (_, i) => verify(token, { otp: totp(secret, 100 + i) })));
+			const codes = guesses.map(errorCode);
+
+			expect(codes.filter((code) => code === 'INVALID_OTP').length).toBeLessThan(5);
+			expect(codes.filter((code) => code === 'OTP_LIMIT_EXCEEDED').length).toBeGreaterThan(25);
+			expect(errorCode(await verify(token, { otp: totp(secret) }))).toBe('OTP_LIMIT_EXCEEDED');
+			expect((await admin(`/users/${id}?fields=status`)).status).toBe('active');
+		});
+
+		it('suspends the account after auth_login_attempts wrong codes in a row, like /auth/login', async () => {
+			const email = address('otp-suspend');
+			const id = await createUser(email);
+			const secret = await enableTfa(email);
+			await admin('/settings', 'PATCH', { auth_login_attempts: 7 });
+
+			try {
+				const first = await newToken(email);
+				for (let i = 0; i < 5; i++) await verify(first, { otp: totp(secret, 100 + i) });
+
+				const second = await newToken(email, 2);
+				expect(errorCode(await verify(second, { otp: totp(secret, 110) }))).toBe('INVALID_OTP');
+				expect((await admin(`/users/${id}?fields=status`)).status).toBe('active');
+
+				expect(errorCode(await verify(second, { otp: totp(secret, 111) }))).toBe('INVALID_OTP');
+				expect((await admin(`/users/${id}?fields=status`)).status).toBe('suspended');
+				expect(errorCode(await verify(second, { otp: totp(secret) }))).toBe('USER_SUSPENDED');
+			} finally {
+				await admin('/settings', 'PATCH', { auth_login_attempts: 25 });
+			}
+		});
+
+		it('starts counting wrong codes again after a successful sign-in', async () => {
+			const email = address('otp-reset');
+			const id = await createUser(email);
+			const secret = await enableTfa(email);
+			await admin('/settings', 'PATCH', { auth_login_attempts: 7 });
+
+			try {
+				const first = await newToken(email);
+				for (let i = 0; i < 4; i++) await verify(first, { otp: totp(secret, 100 + i) });
+				expect((await verify(first, { otp: totp(secret) })).status).toBe(200);
+
+				const second = await newToken(email, 2);
+				for (let i = 0; i < 4; i++) await verify(second, { otp: totp(secret, 110 + i) });
+				expect((await admin(`/users/${id}?fields=status`)).status).toBe('active');
+			} finally {
+				await admin('/settings', 'PATCH', { auth_login_attempts: 25 });
+			}
+		});
+
 		it('supports cookie mode like /auth/login', async () => {
 			const email = address('cookie');
 			await createUser(email);
@@ -793,8 +887,8 @@ describe.runIf(PAGES_ENABLED)(SUITE, () => {
 	});
 });
 
-// The default: no built-in pages, so every link must go to an allow-listed page of your website
-describe.runIf(!PAGES_ENABLED)(`${SUITE} (built-in pages off)`, () => {
+// A default Directus: built-in pages off and PUBLIC_URL left at "/"
+describe.runIf(MODE === 'defaults')(`${SUITE} (defaults)`, () => {
 	it('serves no pages', async () => {
 		for (const path of ['/magic-link', '/magic-link/verify?token=x']) {
 			expect((await call(path)).status).toBe(404);
@@ -827,6 +921,48 @@ describe.runIf(!PAGES_ENABLED)(`${SUITE} (built-in pages off)`, () => {
 
 		const res = await verify(link.searchParams.get('token')!, { mode: 'json' });
 		expect(res.status).toBe(200);
+		expect(jwtUserId(res.json!['data'].access_token)).toBe(id);
+	});
+
+	it('leaves the logo out of emails instead of linking a broken image', async () => {
+		const email = address('logo');
+		await createUser(email);
+		await requestLink(email, { redirect_url: 'http://localhost:3000/auth/magic' });
+
+		expect((await waitForMails(email))[0]!.HTML).not.toContain('<img');
+	});
+});
+
+// Built-in pages on, but PUBLIC_URL left at "/"
+describe.runIf(MODE === 'nourl')(`${SUITE} (pages on, no PUBLIC_URL)`, () => {
+	it('explains why the pages are unavailable', async () => {
+		for (const path of ['/magic-link', '/magic-link/verify?token=x']) {
+			const res = await call(path);
+			expect(res.status).toBe(503);
+			expect(errorCode(res)).toBe('SERVICE_UNAVAILABLE');
+			expect(res.json!['errors'][0].message).toContain('PUBLIC_URL');
+		}
+	});
+
+	it('refuses requests that would link to the pages, without sending anything', async () => {
+		const email = address('nourl-pages');
+		await createUser(email);
+
+		const res = await requestLink(email);
+		expect(res.status).toBe(503);
+		expect(res.json!['errors'][0].message).toContain('redirect_url');
+
+		await sleep(1000);
+		expect(await mailsTo(email)).toHaveLength(0);
+	});
+
+	it('still signs in through your website', async () => {
+		const email = address('nourl-website');
+		const id = await createUser(email);
+		expect((await requestLink(email, { redirect_url: 'http://localhost:3000/auth/magic' })).status).toBe(204);
+
+		const link = linkFrom((await waitForMails(email))[0]!);
+		const res = await verify(link.searchParams.get('token')!, { mode: 'json' });
 		expect(jwtUserId(res.json!['data'].access_token)).toBe(id);
 	});
 });

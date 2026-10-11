@@ -13,6 +13,7 @@ import type { Accountability, EndpointExtensionContext } from '@directus/types';
 import type { MagicLinkConfig } from '../shared/config.js';
 import type { ExtensionEmitter } from '../shared/emitter.js';
 import { matchesAnyEmailPattern } from '../shared/rules.js';
+import { readSettings } from '../shared/settings.js';
 import { ensureTable, type TokenRecord, type TokenStatus } from '../shared/table.js';
 import { createMailer } from './mailer.js';
 
@@ -54,6 +55,10 @@ export type ValidationMeta = RequestInfo & {
 
 // Directus has UserSuspendedError but nothing for invited/draft/archived accounts
 export const UserInactiveError = createError('USER_INACTIVE', 'User account is not active.', 401);
+
+export const OtpLimitExceededError = createError('OTP_LIMIT_EXCEEDED', 'Too many wrong one-time passwords for this link.', 403);
+
+export type Admission = { token: string; tokenHash: string };
 
 const USABLE: TokenStatus[] = ['pending', 'sent'];
 const USER_FIELDS = ['id', 'email', 'first_name', 'last_name', 'status', 'role', 'provider', 'language', 'tfa_secret'];
@@ -125,23 +130,43 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 		return Number(row?.count ?? 0);
 	}
 
+	// Every request's row is written before counting (see admit), so the count includes this request
 	async function emailLimitReached(email: string): Promise<boolean> {
-		return config.maxRequestsPerEmail > 0 && (await countSince('email', email)) >= config.maxRequestsPerEmail;
+		return config.maxRequestsPerEmail > 0 && (await countSince('email', email)) > config.maxRequestsPerEmail;
 	}
 
-	// About the client rather than the account, so it's safe to answer with 429 before anything else runs
-	async function assertIpAllowed(ip: string | null): Promise<void> {
-		if (config.maxRequestsPerIp <= 0 || !ip) return;
-
+	/**
+	 * Records the request before anything is counted, so simultaneous requests see each other: of a burst,
+	 * at most the limit get through. The per-IP limit is about the client rather than the account, so it's
+	 * safe to answer with 429.
+	 */
+	async function admit(email: string, info: RequestInfo): Promise<Admission> {
 		await ensureTable(database, config.table);
 
+		const token = randomBytes(32).toString('base64url');
+		const tokenHash = hashToken(token);
+
+		await table().insert({
+			token_hash: tokenHash,
+			email,
+			status: 'received',
+			ip: info.ip,
+			user_agent: info.userAgent,
+			created_at: new Date(),
+		});
+
+		if (config.maxRequestsPerIp <= 0 || !info.ip) return { token, tokenHash };
+
 		const [row] = await table()
-			.where({ ip })
+			.where({ ip: info.ip })
 			.where('created_at', '>', new Date(Date.now() - HOUR))
 			.count({ count: '*' })
 			.min({ oldest: 'created_at' });
 
-		if (Number(row?.count ?? 0) < config.maxRequestsPerIp) return;
+		if (Number(row?.count ?? 0) <= config.maxRequestsPerIp) return { token, tokenHash };
+
+		// Not kept, so a client that keeps hammering doesn't grow the table
+		await table().where({ token_hash: tokenHash }).delete();
 
 		const oldest = row?.oldest ? new Date(row.oldest as string | number | Date).getTime() : Date.now();
 		throw new HitRateLimitError({ limit: config.maxRequestsPerIp, reset: new Date(oldest + HOUR) });
@@ -185,18 +210,12 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 		}
 	}
 
-	async function reject(email: string, user: UserRow | undefined, reason: string, info: RequestInfo, notified = false) {
+	async function reject(tokenHash: string, email: string, user: UserRow | undefined, reason: string, notified = false) {
 		logger.debug(`[magic-link] request for ${email} refused: ${reason}${notified ? ' (user notified)' : ''}`);
 
-		await table().insert({
-			email,
-			user: user?.id ?? null,
-			status: 'rejected',
-			reason: reason.slice(0, 255),
-			ip: info.ip,
-			user_agent: info.userAgent,
-			created_at: new Date(),
-		});
+		await table()
+			.where({ token_hash: tokenHash })
+			.update({ user: user?.id ?? null, status: 'rejected', reason: reason.slice(0, 255) });
 
 		emitter.emitAction('magic-link.request', { email, user: user?.id ?? null, status: 'rejected', reason, notified });
 	}
@@ -215,45 +234,37 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 	}
 
 	function buildLink(token: string, redirectUrl: string | null, pageRedirect: string | null): string {
-		const url = new URL(redirectUrl ?? `${config.publicUrl}/magic-link/verify`);
+		// The router only accepts a request without redirect_url when the built-in pages and PUBLIC_URL are set
+		const url = new URL(redirectUrl ?? `${config.publicUrl ?? ''}/magic-link/verify`);
 		url.searchParams.set('token', token);
 		if (!redirectUrl && pageRedirect) url.searchParams.set('redirect', pageRedirect);
 		return url.toString();
 	}
 
 	// Runs after the response is sent, so the outcome is never visible to the caller.
-	async function processRequest(input: RequestInfo & { email: string; redirectUrl: string | null; pageRedirect: string | null }) {
-		await ensureTable(database, config.table);
-
+	async function processRequest(
+		input: RequestInfo & Admission & { email: string; redirectUrl: string | null; pageRedirect: string | null },
+	) {
+		const { token, tokenHash } = input;
 		const info: RequestInfo = { ip: input.ip, userAgent: input.userAgent, origin: input.origin };
 		const user = await findUserByEmail(input.email);
 		const rejection = coreRejection(user);
 
 		if (rejection || !user) {
 			const notified = user && user.status !== 'active' ? await notifyInactive(user, info) : false;
-			return reject(input.email, user, rejection ?? 'user_not_found', info, notified);
+			return reject(tokenHash, input.email, user, rejection ?? 'user_not_found', notified);
 		}
 
 		const decision = await evaluatePolicy('request', user, info, input.redirectUrl);
-		if (!decision.allowed) return reject(user.email, user, decision.reason ?? 'rejected', info);
+		if (!decision.allowed) return reject(tokenHash, user.email, user, decision.reason ?? 'rejected');
 
 		await table().where({ user: user.id }).whereIn('status', USABLE).update({ status: 'superseded', reason: 'Superseded by a newer link' });
 
-		const token = randomBytes(32).toString('base64url');
-		const tokenHash = hashToken(token);
 		const expiresAt = new Date(Date.now() + config.ttl);
 
-		await table().insert({
-			token_hash: tokenHash,
-			email: user.email,
-			user: user.id,
-			status: 'pending',
-			redirect_url: input.redirectUrl,
-			ip: info.ip,
-			user_agent: info.userAgent,
-			expires_at: expiresAt,
-			created_at: new Date(),
-		});
+		await table()
+			.where({ token_hash: tokenHash })
+			.update({ email: user.email, user: user.id, status: 'pending', redirect_url: input.redirectUrl, expires_at: expiresAt });
 
 		try {
 			const status = await mailer.send('link', {
@@ -291,6 +302,7 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 			.first();
 
 		if (!record?.user) throw new InvalidTokenError();
+		if (record.status === 'locked') throw new OtpLimitExceededError();
 		if (record.status === 'expired' || (USABLE.includes(record.status) && isPast(record.expires_at))) throw new TokenExpiredError();
 		if (!USABLE.includes(record.status)) throw new InvalidTokenError();
 
@@ -320,6 +332,48 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 			.first();
 		const user = record?.user ? await findUserById(record.user) : undefined;
 		return user?.language ?? null;
+	}
+
+	// Atomic, so simultaneous guesses can't get past MAGIC_LINK_MAX_OTP_ATTEMPTS
+	async function reserveOtpAttempt(id: number): Promise<boolean> {
+		const query = table().where({ id }).whereIn('status', USABLE);
+		if (config.maxOtpAttempts > 0) query.where('otp_attempts', '<', config.maxOtpAttempts);
+		return (await query.increment('otp_attempts', 1)) > 0;
+	}
+
+	// Returns whether this failure used up the link's last attempt
+	async function recordOtpFailure(id: number, user: UserRow): Promise<boolean> {
+		const locked =
+			config.maxOtpAttempts > 0 &&
+			(await table()
+				.where({ id })
+				.whereIn('status', USABLE)
+				.where('otp_attempts', '>=', config.maxOtpAttempts)
+				.update({ status: 'locked', reason: 'Too many wrong 2FA codes' })) > 0;
+
+		await suspendAfterRepeatedFailures(user);
+
+		return locked;
+	}
+
+	/**
+	 * Wrong codes since the user's last magic-link sign-in count toward auth_login_attempts, and the account is
+	 * suspended at the limit, as /auth/login does. Directus doesn't expose its own counter, so password and
+	 * magic-link failures are counted separately.
+	 */
+	async function suspendAfterRepeatedFailures(user: UserRow): Promise<void> {
+		const { authLoginAttempts } = await readSettings(database);
+		if (authLoginAttempts === null) return;
+
+		const lastLogin = await table().where({ user: user.id, status: 'used' }).max({ at: 'used_at' }).first();
+		const failures = table().where({ user: user.id }).whereNot({ status: 'used' });
+		if (lastLogin?.at) failures.where('created_at', '>', lastLogin.at as Date);
+
+		const [row] = await failures.sum({ total: 'otp_attempts' });
+		if (Number(row?.total ?? 0) < authLoginAttempts) return;
+
+		const suspended = await database('directus_users').where({ id: user.id, status: 'active' }).update({ status: 'suspended' });
+		if (suspended) logger.warn(`[magic-link] suspended ${user.email} after ${authLoginAttempts} wrong 2FA codes`);
 	}
 
 	// Every rule runs again here, so suspending a user or changing their role revokes links already sent.
@@ -353,9 +407,14 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 
 		if (config.requireTfa && user.tfa_secret) {
 			if (!input.otp) throw await fail(new InvalidOtpError(), user);
+			if (!(await reserveOtpAttempt(record.id))) throw await fail(new OtpLimitExceededError(), user);
 
 			const tfaService = new TFAService({ knex: database, schema });
-			if (!(await tfaService.verifyOTP(user.id, input.otp))) throw await fail(new InvalidOtpError(), user);
+
+			if (!(await tfaService.verifyOTP(user.id, input.otp))) {
+				const locked = await recordOtpFailure(record.id, user);
+				throw await fail(locked ? new OtpLimitExceededError() : new InvalidOtpError(), user);
+			}
 		}
 
 		try {
@@ -426,5 +485,5 @@ export function createMagicLinkService(config: MagicLinkConfig, context: Endpoin
 		return result;
 	}
 
-	return { assertIpAllowed, processRequest, inspect, login };
+	return { admit, processRequest, inspect, login };
 }

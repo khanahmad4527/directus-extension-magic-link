@@ -111,7 +111,8 @@ export function createMailer(config: MagicLinkConfig, context: EndpointExtension
 			templateDefaults: {
 				projectName: settings.projectName,
 				projectColor: settings.projectColor ?? '#171717',
-				projectLogo: `${config.publicUrl}/${logoPath}`,
+				// Relative without a full PUBLIC_URL, exactly like Directus' own emails
+				projectLogo: `${config.publicUrl ?? ''}/${logoPath}`,
 				projectUrl: settings.projectUrl,
 			},
 		};

@@ -37,13 +37,15 @@ services:
     ports:
       - '${DIRECTUS_PORT:-8155}:8055'
     volumes:
-      - ../../dist:/directus/extensions/directus-extension-magic-link/dist:ro
-      - ../../package.json:/directus/extensions/directus-extension-magic-link/package.json:ro
+      - ${E2E_EXTENSION_DIR:-../..}/dist:/directus/extensions/directus-extension-magic-link/dist:ro
+      - ${E2E_EXTENSION_DIR:-../..}/package.json:/directus/extensions/directus-extension-magic-link/package.json:ro
       - ./fixtures/extensions/magic-link-test:/directus/extensions/magic-link-test:ro
       - ./fixtures/templates:/directus/templates
+      # A volume, so the SQLite database survives recreating the container in the upgrade mode
+      - directus-db:/directus/database
     environment:
       SECRET: e2e-secret-e2e-secret-e2e-secret-e2e
-      PUBLIC_URL: http://localhost:${DIRECTUS_PORT:-8155}
+      PUBLIC_URL: ${E2E_PUBLIC_URL:-http://localhost:8155}
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: adminpass
       TELEMETRY: 'false'
@@ -70,3 +72,6 @@ services:
       MAGIC_LINK_MAX_REQUESTS_PER_IP_PER_HOUR: '5'
       MAGIC_LINK_STALL_TIME: '300'
       MAGIC_LINK_ENABLE_PAGES: ${MAGIC_LINK_ENABLE_PAGES:-true}
+
+volumes:
+  directus-db:

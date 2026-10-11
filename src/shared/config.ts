@@ -61,6 +61,17 @@ export function toLocalizedText(value: unknown): string | Record<string, string>
 	return raw;
 }
 
+// Directus defaults PUBLIC_URL to "/", which isn't enough to build links in emails
+export function toPublicUrl(value: unknown): string | null {
+	try {
+		const url = new URL(toText(value));
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+		return (url.origin + url.pathname).replace(/\/+$/, '');
+	} catch {
+		return null;
+	}
+}
+
 const SAME_SITE = ['lax', 'strict', 'none'] as const;
 type SameSite = (typeof SAME_SITE)[number];
 
@@ -97,7 +108,7 @@ const DAY = 24 * 60 * MINUTE;
 
 export function readConfig(env: Record<string, unknown>) {
 	return {
-		publicUrl: toText(env['PUBLIC_URL'], 'http://localhost:8055').replace(/\/+$/, ''),
+		publicUrl: toPublicUrl(env['PUBLIC_URL']),
 		table: toText(env['MAGIC_LINK_TABLE'], 'extension_magic_link'),
 		retentionDays: toInt(env['MAGIC_LINK_RETENTION_DAYS'], 30),
 
@@ -126,6 +137,7 @@ export function readConfig(env: Record<string, unknown>) {
 
 		maxRequestsPerEmail: toInt(env['MAGIC_LINK_MAX_REQUESTS_PER_HOUR'], 5),
 		maxRequestsPerIp: toInt(env['MAGIC_LINK_MAX_REQUESTS_PER_IP_PER_HOUR'], 20),
+		maxOtpAttempts: toInt(env['MAGIC_LINK_MAX_OTP_ATTEMPTS'], 5),
 
 		// Same defaults as Directus' REFRESH_COOKIE_OPTIONS / SESSION_COOKIE_OPTIONS
 		refreshTokenTtl: toMilliseconds(env['REFRESH_TOKEN_TTL'], 7 * DAY),

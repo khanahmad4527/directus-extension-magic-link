@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readConfig, toBool, toInt, toList, toMilliseconds } from '../../src/shared/config.js';
+import { readConfig, toBool, toInt, toList, toMilliseconds, toPublicUrl } from '../../src/shared/config.js';
 
 describe('env parsing', () => {
 	it('reads lists from strings and from values Directus already cast', () => {
@@ -59,11 +59,32 @@ describe('values Directus split on commas', () => {
 	});
 });
 
+describe('toPublicUrl', () => {
+	it.each([
+		['https://admin.example.com', 'https://admin.example.com'],
+		['https://admin.example.com/', 'https://admin.example.com'],
+		['http://localhost:8055', 'http://localhost:8055'],
+		['https://example.com/cms/', 'https://example.com/cms'],
+		['https://example.com/cms?x=1#y', 'https://example.com/cms'],
+	])('%s -> %s', (value, expected) => {
+		expect(toPublicUrl(value)).toBe(expected);
+	});
+
+	// "/" is Directus' default when PUBLIC_URL isn't set
+	it.each(['/', '', 'admin.example.com', '/cms', 'ftp://example.com', 'javascript:alert(1)', undefined, null, { url: 'x' }])(
+		'%j -> null',
+		(value) => {
+			expect(toPublicUrl(value)).toBeNull();
+		},
+	);
+});
+
 describe('readConfig', () => {
 	it('uses Directus-compatible defaults', () => {
 		const config = readConfig({});
 
-		expect(config.publicUrl).toBe('http://localhost:8055');
+		expect(config.publicUrl).toBeNull();
+		expect(config.maxOtpAttempts).toBe(5);
 		expect(config.allowedProviders).toEqual(['default']);
 		expect(config.ttl).toBe(15 * 60 * 1000);
 		expect(config.stallTime).toBe(500);

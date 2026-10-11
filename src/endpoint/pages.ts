@@ -101,11 +101,12 @@ ${otp}
 	);
 }
 
-export type LinkProblem = 'invalid' | 'expired' | 'suspended' | 'inactive' | 'forbidden';
+export type LinkProblem = 'invalid' | 'expired' | 'locked' | 'suspended' | 'inactive' | 'forbidden';
 
 const PROBLEMS = {
 	invalid: { heading: 'pageInvalidHeading', intro: 'pageInvalidIntro', restart: true },
 	expired: { heading: 'pageExpiredHeading', intro: 'pageExpiredIntro', restart: true },
+	locked: { heading: 'pageLockedHeading', intro: 'pageLockedIntro', restart: true },
 	suspended: { heading: 'pageSuspendedHeading', intro: 'pageSuspendedIntro', restart: false },
 	inactive: { heading: 'pageInactiveHeading', intro: 'pageInactiveIntro', restart: false },
 	forbidden: { heading: 'pageForbiddenHeading', intro: 'pageForbiddenIntro', restart: false },
