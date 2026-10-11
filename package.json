@@ -4,6 +4,14 @@
 	"version": "1.0.0",
 	"license": "MIT",
 	"author": "Ahmad Khan <khanahmad4527@gmail.com>",
+	"homepage": "https://github.com/khanahmad4527/directus-extension-magic-link#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/khanahmad4527/directus-extension-magic-link.git"
+	},
+	"bugs": {
+		"url": "https://github.com/khanahmad4527/directus-extension-magic-link/issues"
+	},
 	"icon": "mail_lock",
 	"keywords": [
 		"directus",
